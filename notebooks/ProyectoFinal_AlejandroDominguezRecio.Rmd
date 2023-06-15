@@ -1,0 +1,1612 @@
+---
+title: "ProyectoFinal_AlejandroDominguezRecio"
+output: html_document
+date: '2022-06-16'
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mice)
+library(caret)
+library(CORElearn)
+library(dummy)
+library(e1071)
+library(GGally)
+library(ggplot2)
+library(gridExtra)
+library(kableExtra)
+library(MASS)
+library(mlbench)
+library(nnet)
+library(pROC)
+library(rminer)
+library(ROCR)
+library(ROSE)
+library(rpart)
+library(smotefamily)
+library(superml)
+```
+
+```{r echo=FALSE}
+# save(datos.CP.G50.normal, datos, datos.CP.G50, datos.G50, conf.dt.1,conf.dt.2,conf.dt.3,conf.dt.4,conf.nn.1,conf.nn.2,conf.nn.3,conf.nn.4,conf.rl.1,conf.rl.2,conf.rl.3,conf.rl.4,conf.svm.4,conf.svm.3,conf.svm.2,conf.svm.1, file="confResults.Rdata")
+```
+
+```{r echo=FALSE}
+load(file="confResults.Rdata")
+```
+
+
+## 1 Introducción
+
+Actualmente existen marcadores biomoleculares relacionados con la respuesta de distintos tipos de quimioterápia en cáncer de mama. No obstante la precisión de los marcadores existentes en la selección del tipo quimioterápia es todavía baja. Con el fin de solucionar este problema se han añadido marcadores géneticos asociados a la respuesta de tratamientos específicos de quimioterápia.
+
+El objetivo de este proyecto es obtener un modelo predictivo que determine la respuesta de una combinación quimioterapéutica en cancer de mama. 
+
+Con el fin objetivo de obtener una mejor visión de la influencia de los distintos marcadores genéticos como de reducir el coste computacional del problema se realizará una primera reducción a 30 marcadores más representativos respecto de la variable dependiente. 
+
+Se entrenarán distintos modelos predictivos con menos de 10 variables y se evaluarán con distintas métricas.
+
+A su vez se tratarán los distintos problemas propios del conjunto de datos como los valores perdidos, desbalanceo de clases o estandarización de variables. 
+
+## 2 Metodología: Datos y algoritmos de clasificación
+
+### 2.1 Dataset
+
+En este proyecto tenemos a disposición un conjunto de **178 observaciones** cada una de ellas con dos conjuntos de características asociados. Tenemos un conjunto de **8 características clínicas patológicas** y otro conjunto de **13516 genes**. 
+
+Las variables del conjunto clínico patológico se encuentran en formato categórico y numérico ordinal. El conjuto de variables numéricos ordinales identifican distintos tipos de categorías en la variable asociada. En el conjunto de 13516 genes el total se encuentra en formato numérico continuo.
+
+Por la características de algunos de los algoritmos aplicados en procesamiento de los datos como de los propios modelos de predicción a utilizar será necesario la codificación de las variables categóricas.
+
+El conjunto clínico patológico representa características tales como el grado del tumor, el estadio o estado nodal entre otros. Tales características no son capaces de predecir con exactitud el tipo molecular o fenotipo de un cancer. 
+
+El conjunto formado por los 13516 genes representa el grado de expresión de estos en 178 pacientes. A partir del conjunto total de genes se pretende seleccionar los que influyan en mayor medida en la respuesta de los pacientes al tratamiento quimioterapéutico en cuestión. 
+
+La distribución de las clases se encuentra con **152 observaciones con pcr=0** y **26 observaciones con pcr=1**. Hay una distribución de clases con clara dominancia de pcr=0, siendo esto una situación de desbalanceo de clases. El desbalanceo de clases puede provocar que los modelos generalizen erróneamente hacia la clase dominante.  Por esto en pasos posteriores trataremos dicho problema la técnica de resampling SMOTE.
+
+#### Distribución de clases
+
+```{r echo=FALSE}
+ggplot(datos, aes(x = pcr)) + 
+  geom_bar(fill = "cornflowerblue", 
+           color="black") +
+  labs(x = "PCR", 
+       y = "Frequency", 
+       title = "Distribución de clases")
+```
+
+Otro aspecto a tener en cuenta de nuestro conjunto de datos son los valores nulos u observaciones en las que no tenemos información sobre algunas de sus características.  En este caso tenemos un total de **32 valores nulos**, repartidos en **32 observaciones** y en **3 características**.
+
+###### Distribucion valores null por columnas
+
+```{r echo=FALSE}
+columnasNull <- apply(is.na(datos[1:8]), 2, sum)
+barplot(columnasNull[columnasNull>0],col=c("cornflowerblue"), main="Distribucion valores null por columnas", ylab = "Número de filas")
+```
+
+Teniendo en cuenta que si eliminasemos las 32 observaciones que contienen valores nulos perderiamos cerca de 20% de los datos aplicaremos imputación de valores perdidos. 
+
+
+#### 2.1.1 Estadística descriptiva e inferencia estadística
+
+Se realizará un análisis estadístico descriptivo e inferencial de las variables clínico patológicas. 
+
+A partir del análisis descriptivo obtendremos las distribución de las variables, su dispersión, media o asimentría. Del análisis inferencial veremos el grado de relación entre las distintas variables.
+
+#### 2.1.2 Imputación de valores perdidos
+
+Como hemos mencionado anteriormente tenemos un total de 32 observaciones con valores perdidos, de los cuales se encuentran concentrados en 3 variables. 
+
+Los valores perdidos causan que las predicciones realizadas por los modelos estén sesgadas o que contengan ruido. Además algunos algoritmos no pueden ser aplicados en conjuntos de datos con valores perdidos. Todo esto provoca que tengan que ser tratados. 
+
+Las dos técnicas mas utilizadas en el tratamiento de valores perdidos son la eliminación de las observaciones o variables que los contengan y la imputación de estos. 
+
+En nuestro caso vamos a optar por la imputación de valores mediante ecuaciones encadenadas. Esta técnica es muy flexible en cuento a los tipos de variables a tratar a la vez. 
+La técnica de ecuaciones encadenadas se basa en la información que aporta el total del conjunto de datos para predecir y asociar un valor a los valores perdidos. Con el fin de reducir incertidumbre estadística a las predicciones, cada predicción se realiza n veces, para finalmente seleccionar las predicción más frecuente. Con está técnica se pretende modificar lo menos posible la distribución original de los datos. 
+
+La imputación de valores la realizaremos mediante el paquete 'MICE'.
+
+Pasos a seguir:
+
+- Seleccionamos el conjunto de datos en el que queremos aplicar la imputación de valores perdidos.
+- Seleccionamos la técnica de predicción con la cual imputar los valores perdidos. Esta dependerá del tipo de variable. En nuestro utilzaremos 'polyreg' para variables categóricas no ordenadas con más de 2 categorías.
+- Seleccionamos el conjunto de variables que se tomarán en cuenta para la predicción de los valores perdidos. En nuestro caso utilizamos todas las variables del conjunto de datos clínicos patológicos.
+- Integramos en un dataset el conjunto de datos con los valores imputados.
+
+
+#### 2.1.3 Selección de genes
+
+La selección de genes tiene como objetivo eliminar aquellos genes que aporten ruido en la predicción, mejorar la interpretación de los modelos y reducir los recursos de cómputo. Como se ha mencionado la selección de genes nos va ha permitir obtener una visión más clara de cuales genes tienen mayor influencia en la predicción, situación clave en el contexto de nuestro problema.
+
+Inicialmente del total de los 13516 genes, seleccionaremos los 50 más representativos. 
+
+El método que seleccionaremos en la selección de los 50 primeros genes será el **grado de correlación** de estos respecto de la variable target/PCR. Los genes seleccionados serán los que tengan un grado de correlación mayor, tanto positiva como negativa. 
+
+Teniendo en cuenta que los modelos no serán entrenados con más de 10 variables posteriormente se realizará una segunda selección de variables. 
+
+Los dos métodos seleccionados para esta segunda selección de variables estarán basados en la **significancia estadística** y en la **ganancia de información** de las variables independientes respecto de la variable target/PCR. 
+
+Los métodos de selección de variables seleccionados pertenecen al grupo de métodos de filtrado. Los métodos de filtrado utilizan la información estadística propia del conjunto de variables. Son computacionalmente menos costosos en comparación con métodos wrapper o embeddded. A su vez evitan un sobreajuste de los modelos a las variables seleccionadas.  
+
+`Hypothesis Filter`
+
+```{r}
+HypothesisFilter <- function(dataframe, ncolumns) {
+
+data.frame.filter <- data.frame(Columna= character(), p.value = numeric())
+
+for(k in 1:ncol(dataframe)) {
+  valor <- BivariateFunction(dataframe[,"pcr"], dataframe[,k], dataframe)
+  data.ite <- data.frame(Columna = names(dataframe)[k], p.value = valor)
+  data.frame.filter <- rbind(data.frame.filter, data.ite)
+  
+}
+  
+data.frame.filter <- data.frame.filter[order(data.frame.filter$p.value, decreasing = FALSE),]
+
+dataframe. <- dataframe[,data.frame.filter[1:ncolumns,]$Columna]
+
+elements <- list(FullResults = data.frame.filter, dataframe = dataframe.)
+
+return (elements)
+
+}
+
+```
+
+
+`Correlation Filter`
+
+```{r}
+CorrelationFilter <- function(dataframe, ncolumns.) {
+
+ncolumns <- ncolumns.+1
+dataframe$pcr <- as.numeric(dataframe$pcr)
+
+set.seed(7)
+# calculate correlation matrix
+correlationMatrix <- cor(dataframe)
+# find attributes that are highly corrected
+orderCorrelation <- order(abs(correlationMatrix[1,]), decreasing = TRUE)
+
+list.corr. <- correlationMatrix[1,]
+
+dataframe. <- dataframe[,names(correlationMatrix[1,orderCorrelation[2:ncolumns]])] 
+
+elements <- list(dataframe = dataframe., list.corr = list.corr.)
+
+return (elements)
+
+}
+```
+
+`Information Gain Filter`
+
+```{r}
+InformatioGainFilter <- function (dataframe, ncolumns.) {
+  
+IG.CORElearn <- attrEval(pcr==1 ~ ., data=dataframe,  estimator = "InfGain")
+
+list.IG. <- IG.CORElearn
+
+dataframe. <- dataframe[,names(IG.CORElearn[order(IG.CORElearn, decreasing = TRUE)[1:ncolumns.]])] 
+dataframe.$pcr <- dataframe$pcr
+
+data.frame.results <- data.frame(Columns = names(IG.CORElearn[order(IG.CORElearn, decreasing = TRUE)]), IG = IG.CORElearn[order(IG.CORElearn, decreasing = TRUE)])
+
+elements <- list(dataframe = dataframe., list.IG = data.frame.results)
+
+return (elements)
+
+}
+```
+
+`Bivariate Function`
+
+```{r}
+## Realiza una análsis bivariante de dos variables dadas.##########################################
+##
+## Variable1, variable2 = Par de vectores que representen variables a analizar
+## Dataset = Conjunto de datos de tipo dataframe al cual pertenece las variables anteriores.
+##
+## **En el caso de introducir variables de tipo caracter se modificarán automaticamente a factor.
+##
+## Importante!!! La variable dependiente se posicionará en variable1.
+BivariateFunction <- function(variable1,variable2, dataset) {
+  
+  
+  ## Modifica variables de tipo caracter a factor.
+  if(is.character(variable1)) {
+    variable1 <- as.factor(variable1)
+  } 
+  
+  if(is.character(variable2)) {
+    variable2 <- as.factor(variable2)
+  }
+  
+  
+  ## Analisis de dos variables categóricas
+  if (is.factor(variable1) & (is.factor(variable2))){
+    ## Creamos tabla de contigencia
+    cont.tab <- xtabs(~variable1+variable2,data=dataset)
+    ## Compramos que el número de observaciones es mayor o igual en todas las celdas para proceder       con test de chi cuadrado
+    if(all(cont.tab)>=5) {
+      chisqTest <- chisq.test(cont.tab)
+      return(chisqTes$p.value)
+    ## En el caso de que tengamos observaciones con valor menor a cinco procedemos a realizar           fisher.
+    } else {
+      fisherTest <- fisher.test(cont.tab,simulate.p.value=TRUE)
+      return(fisherTest$p.value)
+    }
+  } 
+  
+  ## Análisis de variable categórica vs numérica
+  if(is.factor(variable1) & is.numeric(variable2) | is.numeric(variable1) & is.factor(variable2)) {
+    
+    ## Ordenamos las variables. 
+    if(is.factor(variable2)) {
+      changVar1 <- variable1
+      changVar2 <- variable2
+      variable2 <- changVar1
+      variable1 <- changVar2
+    }
+    
+    ## Verificamos la distribución de las varibles
+    ## Ho Shapiro = Datos siguen una distribución normal
+    shap <- shapiro.test(variable2)
+    shapPvalue <- shap$p.value
+    
+    ## En los casos que tengamos menos o dos categorias y la variable numérica no siga una normal
+    if(length(levels(variable1)) <= 2 & shapPvalue <= 0.05) {
+      ## Realizamos el test Wilcox test
+        testWilcox <- wilcox.test(variable2 ~ variable1, data = dataset)
+        return(testWilcox$p.value)
+    }
+    
+    ## En los casos que tengamos más de dos categorias y la variable numérica no siga una normal
+    if(length(levels(variable1)) > 2 & shapPvalue <= 0.05) {
+      ## Realizamos el test Kruskal test
+        testKruskal <- kruskal.test(variable2 ~ variable1, data = dataset)
+        return(testKruskal$p.value)
+    }
+    
+    ## En los casos que tengamos menos o dos categorias y la variable numérica siga una normal
+    if(length(levels(variable1)) <= 2 & shapPvalue > 0.05) {
+      ## Realizamos t-test
+        testT <- t.test(variable2 ~ variable1, data = dataset)
+        return(testT$p.value)
+    }
+    
+    ## En los casos que tengamos mas dos categorias y la variable numérica siga una normal
+    if(length(levels(variable1)) > 2 & shapPvalue > 0.05) {
+      ## Realizamos t-test
+        testAOVA <- aov(variable2 ~ variable1, data = dataset)
+        return(testAOVA$coeficcients[2])
+    }
+    
+  }
+  
+  ##Análisis variable numérica vs numérica
+  if(is.numeric(variable1) & is.numeric(variable2)) {
+    
+    ## Verificamos la distribución de las varibles
+    ## Ho Shapiro = Datos siguen una distribución normal
+    shap_v1 <- shapiro.test(variable1)
+    shapPvalue_v1 <- shap_v1$p.value
+    shap_v2 <- shapiro.test(variable2)
+    shapPvalue_v2 <- shap_v2$p.value
+    ## Obtenemos el valor máximo de los p.values para comprobar que las dos siguen una normal
+    shapPvalue <- max(shapPvalue_v1,shapPvalue_v2)
+    
+    ## En los casos que la variable numérica no siga una normal
+    if(shapPvalue <= 0.05) {
+      ## Realizamos un test de correlación de Spearman
+        testSpearman <- cor.test(variable2, variable1, alternative="two.sided", method="spearman",          exact=FALSE)
+        return(testSpearman$p.value)
+    }
+    
+    ## En los casos que la variable numérica siga una normal
+    if(shapPvalue > 0.05) {
+      ## Realizamos un test de correlación de Pearson
+        testPearson <- cor.test(variable2, variable1, alternative="two.sided", method="pearson")
+        return(testPearson$p.value)
+    }
+    
+  }
+  
+
+
+}
+```
+
+
+
+#### 2.1.4 Codificación de variables
+
+Como mencionamos inicialmente nuestro conjunto de datos está compuesto por variables categóricas y numéricas. Los algoritmos tanto de aprendizaje computacional como los aplicados en el sobremuestreo de instancias realizan sus funciones a través de operaciones matemáticas. Es por esto que es necesario aplicar una codificación a las variables categóricas presentes. 
+
+Las técnicas de codificación de variables que aplicaremos son **LabelEncoder** y **One Hot Encoder**. 
+
+> Label Encoder asocia a cada categoría un entero basado en el orden alfabético. 
+
+> One Hot Encoder por cada categoria crea una nueva variable y asocia los valores de 1 o 0 a su presencia o no, respectivamente.
+
+`Label Endoder Function`
+
+```{r}
+
+LabelEncoderFunction <- function(dataframe) {
+
+dataframe. <- na.omit(dataframe)
+factors <- names(which(sapply(dataframe., is.factor)))
+
+lbl <- LabelEncoder$new()
+for (i in factors){
+  lbl$fit(dataframe.[,i])
+  dataframe.[,i]<- lbl$fit_transform(dataframe.[,i])
+}
+
+dataframe.
+
+return(dataframe.)
+
+}
+```
+
+```{r include=FALSE}
+NumericalEncoderFunction <- function(dataframe.) {
+
+factors <- names(which(sapply(dataframe., is.character)))
+
+lbl <- LabelEncoder$new()
+for (i in factors){
+  lbl$fit(dataframe.[,i])
+  dataframe.[,i]<- lbl$fit_transform(dataframe.[,i])
+}
+
+dataframe.
+
+return(dataframe.)
+
+}
+
+
+```
+
+
+##### 2.1.4.1 Estandarización de los datos 
+
+Algunos algoritmos otorgan el peso a la variable en base al valor de esta. Esto quiere decir que las variables que contengan valores mayores tendrán una mayor influencia sobre el modelo. 
+
+Las variables presentes en un dataset pueden proceder de diversas fuentes y estar representadas en diversas escalas. Por esto es necesario igualar las escalas de las variables presentes en un dataset para que el peso atribuido a cada una no se vea influido por su escala. 
+
+En nuestro conjunto de datos se procederá a estandarizar las escalas de las variables clínico patológicas y las correspondientes a marcadores genéticos.
+
+Utilizaremos un **min-max normalization** con el comando scale().
+
+No obstante no siempre el escalado de variables es aconsejable. Se debe de tener en consideración el rango de las variables y la presencia de valores outliers ya que pueden potenciar el ruido en el conjunto de datos.
+
+##### 2.1.5 Técnicas de sobremuestreo
+
+El problema del desbalanceo de clases es cuando el número de instanciass de una determinada clase no esta igualmente distribuida respecto del resto. Esto crea que los modelos no sean capaces de generalizar correctamente y realize predicciones sesgadas hacia la clase mayoritaria. En el ámbito médico esto es especialmente común, afortunadamente, por la proporcion entre observaciones pertenecientes a individuos sanos respecto de los enfermos. A su vez con el aumento en la disposición de los datos y por consiguiente de la identificación de distintos subgrupos dentro de los conocidos, el problema del desbalanceo está obteniendo especial relevancia. 
+
+En nuestro caso aplicaremos la técnica de sobremuestreo SMOTE en los conjuntos de entrenamiento. Las técnicas de sobremuestreo como SMOTE no se aplican en los conjuntos de test con el objetivo de que este represente la distribución real de los datos. El sobremuestreo tiene su función en proporcionarle al modelo un entrenamiento lo más general posible evitando sesgos por la distribución de clases. **SMOTE** es una técnica de sobremuestreo la cual crea datos sintéticos de la clase minoritaria. 
+
+> SMOTE selecciona una instancia de la clase minoritaria al azar y marca los k vecinos minoritarios más cercanos a esta. Las instancias sintéticas serán añadidas entre estas y los vecinos seleccionados.
+
+
+#### 2.6 Algoritmos aplicados
+
+Se utilizarán los modelos regresión logística, ANN, SVM y árboles de decisión.
+
+- **Neural Networks**
+
+Las redes neuronales es un subconjunto del machine learning inspirado en el comportamiento del cerebro humano y la forma biológica en la que las neuronas llevan a cabo sus funciones.
+
+Estan formadas por un conjunto de neuronas estructuradas por capas. Se diferencian tres tipos de capas, input, hidden y output. Y la toma de decisión esta dirigida por una serie de pesos y valores humbrales. 
+
+Estos contienen una serie de parámetros que permiten controlar la complejidad del modelo o capacidad de generalización.
+
+En este apartado se crearan varios modelos de redes neuronales artificiales, cada uno de ellos con una combianción de los parámetros mas representativos de estos. 
+
+Los parámetros a partir de los cuales formaremos las distintas configuraciones son el **número de neuronas** de la capa oculta y el **weight decay**.
+
+La elección del número de neuronas no tiene una regla fija. Es aconsejable que el número de neuronas de la capa oculta este entre el tamaño de las variables de entrada y salida. Valores excesivamente altos del número de neuronas derivan en overfitting por la facilidad que tendrán estas de memorizar cada situación presentada en el conjunto de entrenamiento. 
+
+En relación al valor weight decay usualmente se suele tomar 0.1 o 0.01. Valores altos de weight decay provocarán un aumento excesivo del control de la complejidad del modelo que no será capaz de 'adaptarse' correctamente. De forma inversa valores excesivamente bajos de weight decay provocarán que la complejidad del modelo no este limitada y la función resultante se ajuste demasiado a los datos del modelo, generando así overfitting.
+
+- **Decision Trees**
+
+Los arboles de decisión  son un tipo de algoritmo de clasificación los cuales tienen una representación similar a la forma de un arbol. Los arboles de decisión están formados por nodos que denotan decisiones a tomar sobre la presencia de un atributo y sus ramas representan los posibles resultados.  
+
+Las ventajas mas significativas de los arboles de decisión son su facilidad de interpretación y el costo computacional de las predicciones. Entre las mayores desventajes destacamos la posibilidad de creación de arboles demasiados complejos y la inestabilidad ante pequeños cambios en los datos. 
+
+Crearemos varios modelos Decision Tree buscando el parámetro Cp que proporcione mejores resultados.
+
+El parámetro **Cp** controla el alcance en la complejidad del arbol generado. 
+
+Los valores de Cp se encuentran en el rango entre 0 y 1, siendo un arbol con complejidad máxima el correspondiente al valor 0 y un arbol sin divisiones al valor 1. 
+
+- **SVM**
+
+El objetivo de SVM es encontrar la mejor linea o hiperplano que clasifique optimamente las distintas instancias de un conjunto de datos. 
+
+A través de los parámetros de **C** y **Gamma** se puede controlar como ajustar la superficie de decisión al conjunto de datos. El valor de C marca el margen de error de la superficie o linea de decisión (número de instancias en zona no perteneciente a su clase). Con el valor de gamma controlamos como la curva de superficie de decisión se ajusta al conjunto de entrenamiento.
+
+- **Logistic Regression**
+
+La regresión logística clasifica instancias en un conjunto discreto de clases. Se diferencia con la regresión lineal en la salida. La regresión logística devuelve un valor de probabilidad a partir del cual se mapean las observaciones en clases discretas. Existen varios tipos de regresión logística (binaria, multiclase y ordinal). El mapeo de clases utiliza un rango de decisión. 
+
+
+#### 2.2 Métricas
+
+Las métricas que usaremos para evaluar los modelos serán ACC, Precision, AUC, RECALL y F1 Score.
+
+Evaluarán los modelos en los conjuntos de entrenamiento, validación y 
+
+- **ACC**
+
+Representa el ratio de predicciones correctas sobre el total de datos de entrada. 
+
+ACC = (TP+TN)/(TP+TN+FP+FN)
+
+Rango ACC [0,1]. Valores altos de ACC determinan mejor rendimiento del modelo.
+
+- **Precision**
+
+Representa el ratio de predicciones correctas positivas sobre el total de predicciones positivas realizadas
+
+Precision = (TP)/(TP+FP)
+
+Rango Precision [0,1]. Valores altos de Precision determinan mejor rendimiento del modelo
+
+- **AUC (Area Under the)**
+
+Determina la capacidad del modelo para distinguir entre clases. Es aplicada en problemas de clasificación binária. La curva ROC estima la probabilidad de que un modelo clasifique una instancia positiva elegida al azar más alto que una instacia negativa elegida al azar
+
+Rango de AUC [0,1]. Valores altos de AUC determinan mejor rendimiento del modelo.
+
+- **RECALL**
+
+Determina la cantidad de instancias postivas que el modelo es capaz de identificar.
+
+RECALL = (TP)/(TP+FN)
+
+Rango de RECALL [0,1]. Valores altos de RECALL determinan mejor rendimiento del modelo.
+
+- **F1 Score**
+
+Determina como de preciso y exhaustivo/robusto es el modelo. Es calculada a partir de la media harmónica ente precisión y recall. Asume que importa de igual forma la precisión y recall. Esto puede ser modificado dependiendo del contexto del problema. 
+
+F1 Score = (2*RECALL*PRECISIÓN)/(RECALL+PRECISIÓN)
+
+Rango de F1 Score [0,1]. Valores altos de F1 Score determinan mejor rendimiento del modelo.
+
+
+`Outer loop Cross Validation 5x2`
+
+```{r}
+outerloop <- function(data, model, parameters, ncolumns, smote) {
+  
+  
+  ## Almacenamos los resultados del inner loop.
+  FoldsResults. <- list()
+  
+  ## Realizamos las 5 particiones de los datos
+  Folds <- createFolds(data$pcr,5)
+  
+  
+  ## DataFrame de resultados
+  data.frame.metricas <- data.frame(Iteracion = character(), Modelo=character(), Parametro1=character(), Parametro2=character(), TecnicaFS = character(), NColumnas = numeric(), ACC.train = numeric(), ACC.test = numeric(), Precision.train = numeric(), Precision.test=numeric(), AUC.train = numeric(), AUC.test = numeric(), RECALL.train = numeric(), RECALL.test = numeric(), F1.train = numeric(), F1.test = numeric())
+  
+  ## Lista de parámetros
+  param.list <- parameters
+  
+  ## Codificamos las variables categóricas
+  data.LE <- LabelEncoderFunction(data)
+  
+  for(k in Folds) {
+    
+    
+    ## Inicializamos las variables que contendrán los valores ACC training y ACC test respectivamente
+    ACC.cross.val <- 0.0
+    ACC.cross.val.test <- 0.0
+    AUC.cross.val <- 0.0
+    AUC.cross.val.test <- 0.0
+    
+    ## Conjunto de datos de training
+    datos.cross.val <- data.LE[-k,]
+    
+    ## Cargamos los elementos de innerLoop
+    inner.loop <- innerLoop(datos.cross.val, model, parameters, ncolumns, smote)
+    best.parameter1 <- inner.loop$BestParameter1
+    best.parameter2 <- inner.loop$BestParameter2
+    best.TecnicaFS <- inner.loop$BestFS
+    FoldsResults.[[1+length(FoldsResults.)]] <- inner.loop$Results
+    
+    ## Seleccionamos la técnica de selección de variables
+    if(best.TecnicaFS == "HypothesisFilter") {
+      
+      data.FS <- HypothesisFilter(data.LE,ncolumns)$dataframe
+      
+    }
+    
+    if(best.TecnicaFS == "InformationGainFilter") {
+      
+      data.FS <- InformatioGainFilter(data.LE,ncolumns)$dataframe
+      
+    }
+    
+    ## SMOTE 
+    if (smote == TRUE) {
+      
+      ## Aplicamos SMOTE
+      datos.cross.val <- SMOTE(data.FS, data.FS$pcr, K=4)$data
+      datos.cross.val$class <- NULL
+      datos.cross.val <- datos.cross.val[-k,]
+
+    } else {
+      
+      ## Conjunto de datos de training
+      datos.cross.val <- data.FS[-k,]
+      
+    }
+    
+    
+    ## Conjunto de datos de test
+    datos.test.cross.val <- data.FS[k,]
+    
+    
+    ## Selección de modelos 
+    if(model== "dt") {
+      
+      ## Decision tree
+      dt.fit <- rpart(pcr=="1"~., data=datos.cross.val, control = rpart.control(cp=as.numeric(best.parameter1))) 
+      
+      ## Predecimos las respuesta con el conjunto de training
+      predic.training <- predict(dt.fit, datos.cross.val)
+      
+      ## Predecimos las respuesta con el conjunto de test
+      predic.test <- predict(dt.fit, datos.test.cross.val)
+      
+    }
+    
+    if(model== "nnet") {
+      
+      neu <- as.numeric(best.parameter1)
+      decay. <- as.numeric(best.parameter2)
+      max.ite <- as.numeric(100)
+      
+      ## Red neuronal nnet
+      nn.fit <- nnet(pcr=="1"~ ., data=datos.cross.val, size=neu,entropy=TRUE,maxit=100, decay=decay., MaxNWts=4000,trace=FALSE)
+      
+      ## Predecimos las respuesta con el conjunto de training
+      predic.training <- predict(nn.fit, datos.cross.val, type="class")
+      
+      ## Predecimos las respuesta con el conjunto de test
+      predic.test <- predict(nn.fit, datos.test.cross.val, type="class")
+    }
+    
+    if(model== "svm") {
+      
+      gamma. <- as.numeric(best.parameter1)
+      cost. <- as.numeric(best.parameter2)
+      
+      ## Support Vector Machines
+      svm.fit <- svm(pcr=="1" ~ ., cost=cost., data=datos.cross.val,type="C-classification", kernel="radial", gamma=gamma., probability=TRUE)
+      
+      ## Predecimos las respuesta con el conjunto de training
+      pred <- predict(svm.fit, datos.cross.val, probability=TRUE)
+      predic.training <- attr(pred, which="probabilities")[,"TRUE"]
+      
+      ## Predecimos las respuesta con el conjunto de test
+      pred <- predict(svm.fit, datos.test.cross.val, probability=TRUE)
+      predic.test <- attr(pred, which="probabilities")[,"TRUE"]
+      
+    }
+    
+    if(model=="rl") {
+      
+      ## Modelo de regresión logística con todas las variables
+      log.reg <- glm(pcr=="1"~ ., data = datos.cross.val, family = binomial("logit"))
+      
+      
+      ## Predecimos las respuesta con el conjunto de training
+      predic.training <- predict(log.reg, newdata = datos.cross.val, type = "response")
+      
+      ## Predecimos las respuesta con el conjunto de test
+      predic.test <- predict(log.reg, newdata = datos.test.cross.val,type = "response")
+      
+    }
+    
+    ## Binarizamos la respuesta
+    predic.training[predic.training >= 0.5] <- 1
+    predic.training[predic.training < 0.5] <- 0
+    predic.test[predic.test >= 0.5] <- 1
+    predic.test[predic.test < 0.5] <- 0
+    
+    ## Obtenemos los TP,TN,FP,FN training
+    true.pos.cross.val <- sum(predic.training == 1 & datos.cross.val$pcr == 1)
+    true.neg.cross.val <- sum(predic.training == 0 & datos.cross.val$pcr == 0)
+    false.neg.cross.val <- sum(predic.training == 0 & datos.cross.val$pcr == 1)
+    false.pos.cross.val <- sum(predic.training == 1 & datos.cross.val$pcr == 0)
+    
+    ## ACC, RECALL y F1 score training
+    ACC.cross.val.vector <- (true.pos.cross.val+true.neg.cross.val)/length(datos.cross.val$pcr)
+    precision.cross.val <- (true.pos.cross.val)/(true.pos.cross.val+false.pos.cross.val)
+    RECALL.cross.val <- (true.pos.cross.val)/(true.pos.cross.val+false.neg.cross.val)
+    F1.cross.val <- (2*RECALL.cross.val*ACC.cross.val.vector/(RECALL.cross.val+ACC.cross.val.vector))
+    
+    ## Obtenemos los TP y TN test
+    true.pos.test.cross.val <- sum(predic.test == 1 & datos.test.cross.val$pcr == 1)
+    true.neg.test.cross.val <- sum(predic.test == 0 & datos.test.cross.val$pcr == 0)
+    false.neg.test.cross.val <- sum(predic.test == 0 & datos.test.cross.val$pcr == 1)
+    false.pos.test.cross.val <- sum(predic.test == 1 & datos.test.cross.val$pcr == 0) 
+    ACC.test.cross.val.vector <-(true.pos.test.cross.val+true.neg.test.cross.val)/length(datos.test.cross.val$pcr)
+    
+    ## ACC, RECALL y F1 score test
+    RECALL.test.cross.val <- (true.pos.test.cross.val)/(true.pos.test.cross.val+false.neg.test.cross.val)
+    precision.test.cross.val <- (true.pos.test.cross.val)/(true.pos.test.cross.val+false.pos.test.cross.val)
+    F1.test.cross.val <- (2*RECALL.test.cross.val*ACC.test.cross.val.vector/(RECALL.test.cross.val+ACC.test.cross.val.vector))
+    
+    ## Obtenemos AUC training de cada iteración
+    dataAUC.train.cross.val <- data.frame(predictions = predic.training, PCR = datos.cross.val$pcr)
+    data(dataAUC.train.cross.val)
+    pred.AUC.cross.val <- prediction(as.numeric(dataAUC.train.cross.val$predictions), dataAUC.train.cross.val$PCR)
+    perf.AUC.cross.val <- performance(pred.AUC.cross.val, "auc")
+    AUC.value.cross.val <- perf.AUC.cross.val@y.values[[1]]
+    
+    ## Obtenemos AUC test de cada iteración
+    dataAUC.test.cross.val <- data.frame(predictions = predic.test, PCR = datos.test.cross.val$pcr)
+    data(dataAUC.test.cross.val)
+    pred.AUC.cross.val.test <- prediction(as.numeric(dataAUC.test.cross.val$predictions), dataAUC.test.cross.val$PCR)
+    perf.AUC.cross.val.test <- performance(pred.AUC.cross.val.test, "auc")
+    AUC.value.test.cross.val <- perf.AUC.cross.val.test@y.values[[1]]
+    
+    ## Añadimos los resultado de la iteración al dataframe de resultado
+    data.frame.metricas.add <- data.frame(Iteracion = c("Parcial"), Modelo = c(model), Parametro1 =best.parameter1, Parametro2 =best.parameter2, TecnicaFS = c(best.TecnicaFS),NColumnas = c(ncolumns), ACC.train = c(ACC.cross.val.vector), ACC.test = c(ACC.test.cross.val.vector),Precision.train = c(precision.cross.val), Precision.test=c(precision.test.cross.val), AUC.train = c(AUC.value.cross.val), AUC.test = c(AUC.value.test.cross.val), RECALL.train = c(RECALL.cross.val), RECALL.test = c(RECALL.test.cross.val), F1.train = c(F1.cross.val), F1.test = c(F1.test.cross.val))
+    data.frame.metricas <- rbind(data.frame.metricas,data.frame.metricas.add);
+    
+    
+  }
+  
+  ## Añadimos los resultado de la iteración al dataframe de resultado
+  data.frame.metricas.global <- data.frame(Iteracion = c("Global"), Modelo = c(model), Parametro1 =c(NA),Parametro2 =c(NA),TecnicaFS = c(NA), NColumnas = c(ncolumns), ACC.train=c(mean(data.frame.metricas$ACC.train)), ACC.test = c(mean(data.frame.metricas$ACC.test)),Precision.train = c(mean(data.frame.metricas$Precision.train)), Precision.test= c(mean(data.frame.metricas$Precision.test)), AUC.train = c(mean(data.frame.metricas$AUC.train)), AUC.test = c(mean(data.frame.metricas$AUC.test)), RECALL.train = c(mean(data.frame.metricas$RECALL.train)), RECALL.test = c(mean(data.frame.metricas$RECALL.test)), F1.train = c(mean(data.frame.metricas$F1.train)), F1.test = c(mean(data.frame.metricas$F1.test)))
+  data.frame.metricas <- rbind(data.frame.metricas,data.frame.metricas.global);
+  
+  ## Devolvemos dataframe con resultado por outer folds y best parameter.
+  elements <- list(Results = data.frame.metricas, NameParametro1 = names(parameters[[1]][1]), NameParametro2 = names(parameters[[2]][1]), FoldsResults = FoldsResults.)
+  
+  
+  return(elements)
+  
+}
+```
+
+
+
+`Inner loop Cross Validation 5x2`
+
+```{r}
+innerLoop <- function(data, model, parameters, ncolumns, smote ) {
+
+  ## Dataframe de resultados
+  data.frame.metricas <- data.frame(Model = character(), Parametro1=character(), Parametro2=character(), TecnicaFS = character(), ACC.train = numeric(), ACC.test = numeric(),Precision.train = numeric(), Precision.test=numeric(), AUC.train = numeric(), AUC.test = numeric(), RECALL.train = numeric(), RECALL.test = numeric(), F1.train = numeric(), F1.test = numeric())
+  
+  ## Codificamos las variables categóricas
+  data.LE <- LabelEncoderFunction(data)
+  
+  
+  ## Lista de parámetros
+  param.list <- parameters
+  
+  ## Técnicas Feature Selection
+  tecnicas.fs <- c("HypothesisFilter", "InformationGainFilter")
+  
+  
+  for(m in 1:length(tecnicas.fs)) {
+    
+   
+    
+    ##Aplicamos método de selección de variables
+    if(tecnicas.fs[m] == "HypothesisFilter") {
+      
+      data <- HypothesisFilter(data.LE, ncolumns)$dataframe
+      
+    }
+    
+    if(tecnicas.fs[m] == "InformationGainFilter") {
+      
+      data <- InformatioGainFilter(data.LE, ncolumns)$dataframe
+      
+    }
+    
+    ## Realizamos las particiones de los datos
+    train.folds <- createFolds(data$pcr,2)
+    
+    for (k in 1:length(parameters[[1]][[1]])) {
+    
+    for(j in  1:length(parameters[[2]][[1]])) {
+      
+      # j <- 1
+      
+      ## Inicializamos las variables que contendrán los valores AUC/ACC train y AUC/ACC validation
+      ACC.train.val <- 0.0
+      ACC.test.val <- 0.0
+      AUC.train.val <- 0.0
+      AUC.test.val <- 0.0
+      RECALL.cross.val <- 0.0
+      RECALL.test.cross.val <- 0.0
+      F1.cross.val <- 0.0
+      F1.test.cross.val <- 0.0
+      precision.cross.val <- 0.0
+      precision.test.cross.val <- 0.0
+      
+      
+      for(i in train.folds) {
+        
+        
+        
+        ## Conjunto de datos de training
+        datos.training <- data[i,]
+        
+        ## SMOTE
+        if (smote == TRUE) {
+          
+          ## Aplicamos SMOTE
+          datos.training <- SMOTE(datos.training, datos.training$pcr, K=4)$data
+          datos.training$class <- NULL
+          datos.training <- datos.training[-i,]
+          
+        }
+        
+        
+        ## Conjunto de datos de validacion
+        datos.validation <- data[-i,]
+        
+        
+        if(model == "dt") {
+          
+          
+          cp. <- as.numeric(parameters[[1]][[1]][k])
+          
+          ## Decision tree
+          dt.fit <- rpart(pcr=="1"~., data=datos.training, control = rpart.control(cp = cp.)) 
+          
+          ## Predecimos las respuesta con el conjunto de training
+          predic.training <- predict(dt.fit, datos.training)
+          
+          ## Predecimos las respuesta con el conjunto de validacion
+          predic.test <- predict(dt.fit, datos.validation)
+          
+        }
+        
+        if(model== "nnet") {
+          
+          neu <- as.numeric(parameters[[1]][[1]][k])
+          decay. <- as.numeric(parameters[[2]][[1]][j])
+          max.ite <- as.numeric(100)
+          
+          ## Red neuronal nnet
+          nn.fit <- nnet(pcr==1~ ., data=datos.training, size=neu,entropy=TRUE,maxit=100, decay=decay., MaxNWts=4000,trace=FALSE)
+          
+          ## Predecimos las respuesta con el conjunto de training
+          predic.training <- predict(nn.fit, datos.training, type="class")
+          
+          ## Predecimos las respuesta con el conjunto de test
+          predic.test <- predict(nn.fit, datos.validation, type="class")
+        }
+        
+        if(model== "svm") {
+          
+         
+          gamma. <- as.numeric(parameters[[1]][[1]][k])
+          cost. <- as.numeric(parameters[[2]][[1]][j])
+          
+          ## Support Vector Machines
+          svm.fit <- svm(pcr==1 ~ ., cost=cost., data=datos.training,type="C-classification", kernel="radial", gamma=gamma., probability=TRUE)
+          
+          ## Predecimos las respuesta con el conjunto de training
+          pred <- predict(svm.fit, datos.training, probability=TRUE)
+          predic.training <- attr(pred, which="probabilities")[,"TRUE"]
+          
+          ## Predecimos las respuesta con el conjunto de test
+          pred <- predict(svm.fit, datos.validation, probability=TRUE)
+          predic.test <- attr(pred, which="probabilities")[,"TRUE"]
+          
+        }
+        
+        if(model=="rl") {
+          
+          ## Modelo de regresión logística con todas las variables
+          log.reg <- glm(pcr=="1"~ ., data = datos.training, family = binomial("logit"))
+          
+          
+          ## Predecimos las respuesta con el conjunto de training
+          predic.training <- predict(log.reg, newdata = datos.training, type = "response")
+          
+          ## Predecimos las respuesta con el conjunto de test
+          predic.test <- predict(log.reg, newdata = datos.validation,type = "response")
+          
+        }
+        
+        
+        ## Binarizamos la respuesta
+        predic.training[predic.training >= 0.5] <- 1
+        predic.training[predic.training < 0.5] <- 0
+        predic.test[predic.test >= 0.5] <- 1
+        predic.test[predic.test < 0.5] <- 0
+
+        
+        ## Obtenemos los TP,TN,FP,FN training
+        true.pos.cross.val <- sum(predic.training == 1 & datos.training$pcr == 1)
+        true.neg.cross.val <- sum(predic.training == 0 & datos.training$pcr == 0)
+        false.neg.cross.val <- sum(predic.training == 0 & datos.training$pcr == 1)
+        false.pos.cross.val <- sum(predic.training == 1 & datos.training$pcr == 0)
+        ACC.train.val.vector <- (true.pos.cross.val+true.neg.cross.val)/length(datos.training$pcr)
+        
+        ## ACC, RECALL, Precision y F1 score training
+        ACC.train.val <- ACC.train.val+ACC.train.val.vector
+        precision.cross.val. <- (true.pos.cross.val)/(true.pos.cross.val+false.pos.cross.val)
+        RECALL.cross.val. <- (true.pos.cross.val)/(true.pos.cross.val+false.neg.cross.val)
+        F1.cross.val. <- (2*RECALL.cross.val*precision.cross.val./(RECALL.cross.val+precision.cross.val.))
+        
+        RECALL.cross.val <- RECALL.cross.val + RECALL.cross.val.
+        F1.cross.val <- F1.cross.val + F1.cross.val.
+        precision.cross.val <- precision.cross.val + precision.cross.val.
+        
+        
+        ## Obtenemos los TP y TN test
+        true.pos.test.cross.val <- sum(predic.test == 1 & datos.validation$pcr == 1)
+        true.neg.test.cross.val <- sum(predic.test == 0 & datos.validation$pcr == 0)
+        false.neg.test.cross.val <- sum(predic.test == 0 & datos.validation$pcr == 1)
+        false.pos.test.cross.val <- sum(predic.test == 1 & datos.validation$pcr == 0) 
+        ACC.test.cross.val.vector <-(true.pos.test.cross.val+true.neg.test.cross.val)/length(datos.validation$pcr)
+        
+        ## ACC, RECALL,Precision y  F1 score test
+        ACC.test.val <- ACC.test.val+ACC.test.cross.val.vector
+         precision.test.cross.val. <- (true.pos.test.cross.val)/(true.pos.test.cross.val+false.pos.test.cross.val)
+        RECALL.test.cross.val. <- (true.pos.test.cross.val)/(true.pos.test.cross.val+false.neg.test.cross.val)
+        F1.test.cross.val. <- (2*RECALL.test.cross.val*ACC.test.cross.val.vector/(RECALL.test.cross.val+ACC.test.cross.val.vector))
+        precision.test.cross.val <- precision.test.cross.val + precision.test.cross.val.
+        RECALL.test.cross.val <- RECALL.test.cross.val + RECALL.test.cross.val.
+        F1.test.cross.val <- F1.test.cross.val + F1.test.cross.val.
+        
+        
+        ## Obtenemos AUC training de cada iteración
+        dataAUC.train.cross.val <- data.frame(predictions = predic.training, pcr = datos.training$pcr)
+        data(dataAUC.train.cross.val)
+        pred.AUC.train.val <- prediction(as.numeric(dataAUC.train.cross.val$predictions), dataAUC.train.cross.val$pcr)
+        perf.AUC.train.val <- performance(pred.AUC.train.val, "auc")
+        AUC.value.cross.val <- perf.AUC.train.val@y.values[[1]]
+        AUC.train.val <- AUC.train.val + AUC.value.cross.val
+        
+        ## Obtenemos AUC test de cada iteración
+        dataAUC.test.cross.val <- data.frame(predictions = predic.test, pcr = datos.validation$pcr)
+        data(dataAUC.test.cross.val)
+        pred.AUC.test.val <- prediction(as.numeric(dataAUC.test.cross.val$predictions), dataAUC.test.cross.val$pcr)
+        perf.AUC.test.val <- performance(pred.AUC.test.val, "auc")
+        AUC.value.test.cross.val <- perf.AUC.test.val@y.values[[1]]
+        AUC.test.val <- AUC.test.val + AUC.value.test.cross.val
+        
+      }
+      
+      ACC.train.val <- ACC.train.val/2
+      ACC.test.val <- ACC.test.val/2
+      AUC.test.val <- AUC.test.val/2
+      AUC.train.val <- AUC.train.val/2
+      RECALL.cross.val <- RECALL.cross.val/2
+      RECALL.test.cross.val <- RECALL.test.cross.val/2
+      F1.cross.val <- F1.cross.val/2
+      F1.test.cross.val <- F1.test.cross.val/2
+      precision.cross.val <- precision.cross.val/2
+      precision.test.cross.val <- precision.test.cross.val/2
+      
+
+      data.frame.add <- data.frame(Model = model, Parametro1=as.character(parameters[[1]][[1]][k]),Parametro2=as.character(parameters[[2]][[1]][j]), TecnicaFS = tecnicas.fs[m], ACC.train = ACC.train.val, ACC.test = ACC.test.val, Precision.train = c(precision.cross.val), Precision.test=c(precision.test.cross.val),AUC.train = AUC.train.val, AUC.test = AUC.test.val, RECALL.train = c(RECALL.cross.val), RECALL.test = c(RECALL.test.cross.val), F1.train = c(F1.cross.val), F1.test = c(F1.test.cross.val))
+      data.frame.metricas <- rbind(data.frame.metricas,data.frame.add)
+      data.frame.metricas <- data.frame.metricas[order(data.frame.metricas$AUC.test, decreasing = TRUE), ]
+      
+      
+      
+    }
+  }
+    
+  }
+  
+  elements <- list(Results = data.frame.metricas, BestParameter1 = data.frame.metricas$Parametro1[1], BestParameter2 = data.frame.metricas$Parametro2[1], BestFS = data.frame.metricas$TecnicaFS[1])
+  
+  
+  
+  
+  
+  return(elements)
+  
+}
+
+```
+
+## Resultados: 
+
+
+
+```{r echo=FALSE}
+datos <- read.table(file="Yuan_expr_clinpat.csv", sep=";", dec=",", header=T, stringsAsFactors = T)
+```
+
+
+
+```{r echo=FALSE}
+datos$tstage <- as.factor(datos$tstage) # Convertimos tstage a factor
+datos$nodalstatus <- as.factor(datos$nodalstatus) # Convertimos nodalstatus a factor
+datos$grade <- as.factor(datos$grade) # Convertimos grade a factor
+```
+
+```{r echo = FALSE}
+datos.CP <- datos[,1:8]
+```
+
+#### Imputación de valores perdidos
+
+**Tecnica de predicción aplicada en cada variable**
+
+```{r echo=FALSE}
+ini <- mice(datos.CP, maxit = 0)
+meth <- ini$meth
+meth
+```
+
+**Tabla de predicciones**
+
+Muestra las variables tomadas en cuenta o tomadas como predictores en la imputación de valores. Optamos por tener en cuenta todas las variables del conjunto de datos clínico patológicos
+
+```{r echo=FALSE}
+pred <- ini$pred
+pred
+```
+
+```{r include=FALSE}
+imputed <-  mice(datos.CP, method=meth, predictorMatrix=pred, m=5)
+```
+
+```{r echo=FALSE}
+datos.CP <- complete(imputed)
+```
+
+**Verificamos la imputación de valores perdidos**
+
+```{r echo=FALSE} 
+sapply(datos.CP, function(x) sum(is.na(datos.CP)))
+```
+
+##### Inspeccionamos distribución de los conjuntos de datos original y imputado
+
+La inspección de la distribución de los conjuntos de datos original y imputados la realizaremos utilizando el test de chi cuadrado.
+
+```{r warning=FALSE, echo=FALSE}
+chisq.test(table(datos$tstage, datos.CP$tstage))
+```
+
+```{r warning=FALSE, echo=FALSE}
+chisq.test(table(datos$grade, datos.CP$grade))
+```
+
+```{r warning=FALSE, echo=FALSE}
+chisq.test(table(datos$nodalstatus, datos.CP$nodalstatus))
+```
+
+Como vemos la imputación de valores perdidos no ha influido en la distribución original de los datos.
+
+
+```{r echo=FALSE}
+datos.G <- datos[,8:13516]
+```
+
+#### Seleccionamos los 50 genes más representitvos según su correlación con la variable dependiente
+
+```{r}
+##datos.G50 <- CorrelationFilter(datos.G, 50)
+```
+
+**Nombres de los 50 genes seleccionados**
+
+```{r echo=FALSE}
+#datos.G50 <- datos.G50$dataframe
+names50Gnes <- data.frame(Nombres50Gen=c(names(datos.G50)))
+names50Gnes
+```
+
+##### Creamos conjunto de datos clínico patológico One Hot Encoder
+
+```{r}
+datos.CP.oneHC <- dummy(datos.CP[1:7])
+```
+
+```{r include=FALSE}
+datos.CP.oneHC <- NumericalEncoderFunction(datos.CP.oneHC)
+```
+
+##### Combinamos datos clínicos patológicos y los 50 genes marcadores más representativos - Normalizados + One Hot Encoder
+
+```{r}
+# datos.CP.G50.normal <- cbind(datos.CP.oneHC,datos.G50);
+# datos.CP.G50.normal <- as.data.frame(scale(datos.CP.G50.normal,center=T,scale=T))
+# datos.CP.G50.normal$pcr <- datos$pcr
+```
+
+##### Combinamos clínicos patológicos y los 50 genes marcadores más representativos - Sin normalizar
+
+```{r}
+datos.CP.G50 <- cbind(datos.CP,datos.G50);
+```
+
+#### Estadística descriptiva 
+
+#### Análisis univariante
+
+##### Resumen de distribución de las variables clínico patológicas
+
+```{r echo=FALSE}
+summary(datos.CP)
+```
+##### Características de las variables clínico patológicas
+
+```{r echo=FALSE}
+str(datos.CP)
+```
+
+##### **Variables categóricas**
+
+##### Representamos la distribución de las variables categóricas
+
+- Gráfica de distribución de clases de la variable erihc
+
+```{r echo=FALSE}
+barplot(table(datos.CP$erihc), col=c("cornflowerblue"))
+```
+
+- Gráfica de distribución de clases de la variable prihc
+
+```{r echo=FALSE}
+barplot(table(datos.CP$prihc), col=c("cornflowerblue"))
+```
+
+- Gráfica de distribución de clases de la variable her2
+
+```{r echo=FALSE}
+barplot(table(datos.CP$her2), col=c("cornflowerblue"))
+```
+
+- Gráfica de distribución de clases de la variable tstage
+
+```{r echo=FALSE}
+barplot(table(datos.CP$tstage),col=c("cornflowerblue"))
+```
+
+- Gráfica de distribución de clases de la variable nodalstatus
+
+```{r echo=FALSE}
+barplot(table(datos.CP$nodalstatus), col=c("cornflowerblue"))
+```
+
+- Gráfica de distribución de clases de la variable grade
+
+```{r echo=FALSE}
+barplot(table(datos.CP$grade), col=c("cornflowerblue"))
+```
+
+- Gráfica de distribución de clases de la variable pcr
+
+```{r echo=FALSE}
+barplot(table(datos.CP$pcr), col=c("cornflowerblue"))
+```
+
+
+##### **Variables numéricas**
+
+En nuestro caso tenemos como única variable de tipo numérico Edad.
+
+Analizamos los principales parámetros de su distribución
+
+
+```{r echo=FALSE}
+dataAge <- data.frame(Media = mean(datos.CP$age), Varianza = var(datos.CP$age), DesvStand =sd(datos.CP$age), Mediana = median(datos.CP$age))
+dataAge
+```
+
+- Resumen de distribución
+
+```{r echo=FALSE}
+summary(datos.CP$age)
+```
+
+
+ - Gráfica de distribución de clases de la variable Edad
+
+```{r echo=FALSE}
+hist(datos.CP$age, main = "Edad", ylab = "Frecuencia", xlab = "Edad")
+```
+
+
+#### Análisis Bivariante
+
+Con el análisis bivariante estudiaremos las relación entre dos variable de nuestro conjunto de datos. Estas podrán ser un par de categóricas, numéricas o ambas.
+
+Con el fin de automatizar el proceso de estudio se ha desarrollado una función llamada BivariateFunction (ACtividad 1).
+
+#####  **Variables categóricas**
+
+- Relación PCR vs Edad
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+barplot(table(datos.CP$pcr, datos.CP$age), cex.names=0.7, las = 2, legend.text = TRUE)
+```
+
+- Análisis PCR vs erihc
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+ barplot(table(datos.CP$pcr, datos.CP$erihc), beside = TRUE,legend.text = TRUE, horiz = F)
+```
+
+- Análisis PCR vs prihc
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+ barplot(table(datos.CP$pcr, datos.CP$prihc), beside = TRUE,legend.text = TRUE, horiz = F)
+```
+
+
+- Análisis PCR vs her2
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+ barplot(table(datos.CP$pcr, datos.CP$her2), beside = TRUE,legend.text = TRUE, horiz = F)
+```
+
+
+- Análisis PCR vs tstage
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+ barplot(table(datos.CP$pcr, datos.CP$tstage), beside = TRUE,legend.text = TRUE, horiz = F)
+```
+
+- Análisis PCR vs nodalstatus
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+ barplot(table(datos.CP$pcr, datos.CP$nodalstatus), beside = TRUE,legend.text = TRUE, horiz = F)
+```
+
+- Análisis PCR vs grade
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+ barplot(table(datos.CP$pcr, datos.CP$grade), beside = TRUE,legend.text = TRUE, horiz = F)
+```
+
+
+##### **Variable categórica vs numérica**
+
+Analizaremos las distribución de los tres genes más representativos y su relación con pcr.
+
+- Análisis PCR vs AC128677.4.....CH17.132F21.1.....IGKV1OR.1...
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+boxplot(datos.CP.G50$pcr~datos.CP.G50$AC128677.4.....CH17.132F21.1.....IGKV1OR.1.....IGKV1OR.1.....IGKV1OR10.1.....IGKV1OR10.1.....IGKV1OR2.2)
+```
+
+Comprobamos la distribución de los datos de la variable numérica
+
+```{r echo=FALSE}
+hist(datos.CP.G50$AC128677.4.....CH17.132F21.1.....IGKV1OR.1.....IGKV1OR.1.....IGKV1OR10.1.....IGKV1OR10.1.....IGKV1OR2.2)
+```
+
+- Análisis PCR vs IGKV1.17.....IGKV1.17
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+boxplot(datos.CP.G50$pcr~datos.CP.G50$IGKV1.17.....IGKV1.17)
+```
+
+Visualizamos la distribución de los datos de la variable numérica
+
+```{r echo=FALSE}
+hist(datos.CP.G50$IGKV1.17.....IGKV1.17)
+```
+
+- Análisis PCR vs IGKV1.17.....IGKV1.17
+
+Representación gráfica de distribuciones
+
+```{r echo=FALSE}
+boxplot(datos.CP.G50$pcr~datos.CP.G50$HLA.DQA1.....LOC100509457)
+```
+
+#### Análisis estadístico
+
+- Tests estadísticos
+
+```{r echo=FALSE}
+StatResults <- HypothesisFilter(datos.CP.G50[,1:11],11)
+```
+
+```{r echo=FALSE}
+StatResults$FullResults
+```
+
+- Ganancia de información
+
+```{r echo=FALSE, warning=FALSE}
+GainResults <- InformatioGainFilter(datos.CP.G50[,1:11], 10)
+```
+
+
+```{r echo=FALSE}
+GainResults$list.IG
+```
+
+
+
+Tanto el análisis por hipótesis como por ganancia de información muestran que las variables más significativas son los 3 marcadores genéticos. En relación a las variables clínico patológicas existen algunas diferencias aunque de nuevo existe coincidencia en las 3 primeras variables en ambos test. 
+
+En el test estadístico tenemos las **6 primeras variables con significancia estadística**. Respecto a la ganancia de información podemos decir que **las 10 variables seleccionadas representan aproximandamente el 0.49% de la información** contenida en el conjunto de datos clínico patológico y 50 genes más representativos.
+
+#### Análisis de modelos
+
+##### **Configuración 1** - Decision trees
+
+- Datos = datos.CP.G50
+- Cp = seq(0.1, 0.9, by = 0.1)
+- Smote = TRUE
+- Variables = 10
+
+```{r echo=FALSE}
+# seqDt1 <- seq(0.1, 0.9, by = 0.1)
+# paramDt1 <- list(param1=list(cp=c(seqDt1)), param2=list(na=c("NA")))
+# conf.dt.1 <- outerloop(datos.CP.G50, "dt", paramDt1, 10, TRUE)$Results
+conf.dt.1
+```
+
+##### **Configuración 2** - Decision trees
+
+- Datos = datos.CP.G50
+- Cp = seq(0.1, 0.9, by = 0.1)
+- Smote = FALSE
+- Variables = 6
+
+```{r echo=FALSE}
+# seqDt1 <- seq(0.1, 0.9, by = 0.1)
+# paramDt1 <- list(param1=list(cp=c(seqDt1)), param2=list(na=c("NA")))
+# conf.dt.2 <- outerloop(datos.CP.G50, "dt", paramDt1, 6, FALSE)$Results
+conf.dt.2
+```
+
+
+##### **Configuración 3** - Decision trees
+
+- Datos = datos.CP.G50
+- Cp = seq(0.1, 0.9, by = 0.1)
+- Smote = FALSE
+- Variables = 10
+
+```{r echo=FALSE}
+# seqDt1 <- seq(0.1, 0.9, by = 0.1)
+# paramDt1 <- list(param1=list(cp=c(seqDt1)), param2=list(na=c("NA")))
+# conf.dt.3 <- outerloop(datos.CP.G50, "dt", paramDt1, 10, FALSE)$Results
+conf.dt.3
+```
+
+##### **Configuración 4** - Decision trees
+
+- Datos = datos.CP.G50
+- Cp = seq(0.1, 0.9, by = 0.1)
+- Smote = TRUE
+- Variables = 10
+- One Hot Encoding
+- Datos normalizados
+
+```{r echo=FALSE}
+# seqDt1 <- seq(0.1, 0.9, by = 0.1)
+# paramDt1 <- list(param1=list(cp=c(seqDt1)), param2=list(na=c("NA")))
+# conf.dt.4 <- outerloop(datos.CP.G50.normal, "dt", paramDt1, 10, TRUE)$Results
+conf.dt.4
+```
+
+
+```{r echo=FALSE}
+result.dt <- rbind(conf.dt.1,conf.dt.2)
+result.dt <- rbind(result.dt,conf.dt.3)
+result.dt <- rbind(result.dt,conf.dt.4)
+```
+
+
+**Resultados Globales Decision Tree**
+
+```{r echo=FALSE}
+global.result.dt <- result.dt[result.dt$Iteracion == "Global",]
+global.result.dt <- global.result.dt[order(global.result.dt$AUC.test, decreasing = TRUE), ]
+global.result.dt$Configuracion <- c(1,2,3,4)
+global.result.dt
+```
+
+
+##### **Configuración 1** - Neural Networks
+
+- Datos = datos.CP.G50
+- Neuronas = seq(1, 100, by = 20)
+- Decay = seq(0.01, 0.3, by = 0.05)
+- Smote = TRUE
+- Variables = 10
+
+```{r echo=FALSE}
+# seqNN1 <- seq(1, 100, by = 20)
+# seqNN2 <- seq(0.01, 0.3, by = 0.05)
+# paramNN1 <- list(param1=list(neu=c(seqNN1)), param2=list(decay=c(seqNN2)))
+# conf.nn.1 <- outerloop(datos.CP.G50, "nnet", paramNN1, 10, TRUE)$Results
+conf.nn.1
+```
+
+##### **Configuración 2** - Neural Networks
+
+- Datos = datos.CP.G50
+- Neuronas = seq(1, 100, by = 20)
+- Decay = seq(0.01, 0.3, by = 0.05)
+- Smote = FALSE
+- Variables = 10
+
+```{r echo=FALSE}
+# seqNN1 <- seq(1, 100, by = 20)
+# seqNN2 <- seq(0.01, 0.3, by = 0.05)
+# paramNN1 <- list(param1=list(neu=c(seqNN1)), param2=list(decay=c(seqNN2)))
+# conf.nn.2 <- outerloop(datos.CP.G50, "nnet", paramNN1, 10, FALSE)$Results
+conf.nn.2
+```
+
+##### **Configuración 3** - Neural Networks
+
+- Datos = datos.CP.G50
+- Neuronas = seq(1, 100, by = 20)
+- Decay = seq(0.01, 0.3, by = 0.05)
+- Smote = FALSE
+- Variables = 6
+
+```{r echo=FALSE}
+# seqNN1 <- seq(1, 100, by = 20)
+# seqNN2 <- seq(0.01, 0.3, by = 0.05)
+# paramNN1 <- list(param1=list(neu=c(seqNN1)), param2=list(decay=c(seqNN2)))
+# conf.nn.3 <- outerloop(datos.CP.G50, "nnet", paramNN1, 6, FALSE)$Results
+conf.nn.3
+```
+
+##### **Configuración 4** - Neural Networks
+
+- Datos = datos.CP.G50
+- Neuronas = seq(1, 100, by = 20)
+- Decay = seq(0.01, 0.3, by = 0.05)
+- Smote = tRUE
+- Variables = 10
+- One Hot Endoding
+- Datos normalizados
+
+```{r echo=FALSE}
+# seqNN1 <- seq(1, 100, by = 20)
+# seqNN2 <- seq(0.01, 0.3, by = 0.05)
+# paramNN1 <- list(param1=list(neu=c(seqNN1)), param2=list(decay=c(seqNN2)))
+# conf.nn.4 <- outerloop(datos.CP.G50.normal, "nnet", paramNN1, 10, TRUE)$Results
+conf.nn.4
+```
+
+```{r echo=FALSE}
+result.nn <- rbind(conf.nn.1, conf.nn.2)
+result.nn <- rbind(result.nn, conf.nn.3)
+result.nn <- rbind(result.nn,conf.nn.4)
+```
+
+
+**Resultados Globales Neural Network**
+
+```{r echo=FALSE}
+global.result.nn <- result.nn[result.nn$Iteracion == "Global",]
+global.result.nn <- global.result.nn[order(global.result.nn$AUC.test, decreasing = TRUE), ]
+global.result.nn$Configuracion <- c(1,2,3,4)
+global.result.nn
+```
+
+##### **Configuración 1** - Support Vector Machine
+
+- Datos = datos.CP.G50
+- Gamma = seq(1, 80, by = 15)
+- Cost = seq(1, 100, by = 20)
+- Smote = TRUE
+- Variables = 10
+
+```{r echo=FALSE}
+# seqSVM1 <- seq(1, 80, by = 15)
+# seqSVM2 <- seq(1, 100, by = 20)
+# paramNN1 <- list(param1=list(gamma=c(seqSVM1)), param2=list(cost=c(seqSVM2)))
+# conf.svm.1 <- outerloop(datos.CP.G50, "svm", paramNN1, 10, TRUE)$Results
+conf.svm.1
+```
+
+##### **Configuración 2** - Support Vector Machine
+
+- Datos = datos.CP.G50
+- Gamma = seq(1, 80, by = 15)
+- Cost = seq(1, 100, by = 20)
+- Smote = FALSE
+- Variables = 10
+
+```{r echo=FALSE}
+# seqSVM1 <- seq(1, 80, by = 15)
+# seqNSVM2 <- seq(1, 100, by = 20)
+# paramNN1 <- list(param1=list(gamma=c(seqSVM1)), param2=list(cost=c(seqSVM2)))
+# conf.svm.2 <- outerloop(datos.CP.G50, "svm", paramNN1, 10, FALSE)$Results
+conf.svm.2
+```
+
+##### **Configuración 3** - Support Vector Machine
+
+- Datos = datos.CP.G50
+- Gamma = seq(1, 80, by = 15)
+- Cost = seq(1, 100, by = 20)
+- Smote = FALSE
+- Variables = 6
+
+```{r echo=FALSE}
+# seqSVM1 <- seq(1, 80, by = 15)
+# seqNSVM2 <- seq(1, 100, by = 20)
+# paramNN1 <- list(param1=list(gamma=c(seqSVM1)), param2=list(cost=c(seqSVM2)))
+# conf.svm.3 <- outerloop(datos.CP.G50, "svm", paramNN1, 6, FALSE)$Results
+conf.svm.3
+```
+
+
+##### **Configuración 4** - Support Vector Machine
+
+- Datos = datos.CP.G50
+- Gamma = seq(1, 80, by = 15)
+- Cost = seq(1, 100, by = 20)
+- Smote = TRUE
+- Variables = 10
+- One Hot Encoding
+- Datos Normalizados
+
+```{r echo=FALSE}
+# seqSVM1 <- seq(1, 80, by = 15)
+# seqNSVM2 <- seq(1, 100, by = 20)
+# paramNN1 <- list(param1=list(gamma=c(seqSVM1)), param2=list(cost=c(seqSVM2)))
+# conf.svm.4 <- outerloop(datos.CP.G50.normal, "svm", paramNN1, 10, TRUE)$Results
+conf.svm.4
+```
+
+```{r echo=FALSE}
+result.svm <- rbind(conf.svm.1, conf.svm.2)
+result.svm <- rbind(result.svm, conf.svm.3)
+result.svm <- rbind(result.svm,conf.svm.4)
+```
+
+**Resultados Globales Support Vector Machine**
+
+```{r echo=FALSE}
+global.result.svm <- result.svm[result.svm$Iteracion == "Global",]
+global.result.svm <- global.result.svm[order(global.result.svm$AUC.test, decreasing = TRUE), ]
+global.result.svm$Configuracion <- c(1,2,3,4)
+global.result.svm
+```
+
+
+##### **Configuración 1** - Logistic Regression
+
+- Datos = datos.CP.G50
+- Smote = TRUE
+- Variables = 10
+
+```{r echo=FALSE}
+# paramRL1 <- list(param1=list(Na=c("NA")), param2=list(Na.=c("NA")))
+# conf.rl.1 <- outerloop(datos.CP.G50, "rl", paramRL1, 10, TRUE)$Results
+conf.rl.1
+```
+
+##### **Configuración 2** - Logistic Regression
+
+- Datos = datos.CP.G50
+- Smote = FALSE
+- Variables = 10
+
+```{r echo=FALSE}
+# paramRL1 <- list(param1=list(Na=c("NA")), param2=list(Na.=c("NA")))
+# conf.rl.2 <- outerloop(datos.CP.G50, "rl", paramRL1, 10, FALSE)$Results
+conf.rl.2
+```
+
+
+##### **Configuración 3** - Logistic Regression
+
+- Datos = datos.CP.G50
+- Smote = FALSE
+- Variables = 6
+
+```{r echo=FALSE}
+# paramRL1 <- list(param1=list(Na=c("NA")), param2=list(Na.=c("NA")))
+# conf.rl.3 <- outerloop(datos.CP.G50, "rl", paramRL1, 6, FALSE)$Results
+conf.rl.3
+```
+
+##### **Configuración 4** - Logistic Regression
+
+- Datos = datos.CP.G50
+- Smote = TRUE
+- Variables = 10
+- One Hot Encoding
+- Normalizados
+
+```{r echo=FALSE}
+# paramRL1 <- list(param1=list(Na=c("NA")), param2=list(Na.=c("NA")))
+# conf.rl.4 <- outerloop(datos.CP.G50.normal, "rl", paramRL1, 10, TRUE)$Results
+conf.rl.4
+```
+
+
+```{r echo=FALSE}
+result.rl <- rbind(conf.rl.1, conf.rl.2)
+result.rl <- rbind(result.rl, conf.rl.3)
+result.rl <- rbind(result.rl,conf.rl.4)
+```
+
+**Resultados Globales Logistic Regression**
+
+```{r echo=FALSE}
+global.result.rl <- result.rl[result.rl$Iteracion == "Global",]
+global.result.rl <- global.result.rl[order(global.result.rl$AUC.test, decreasing = TRUE), ]
+global.result.rl$Configuracion <- c(1,2,3,4)
+global.result.rl
+```
+
+
+**Mejores resultados Globales**
+
+```{r echo=FALSE}
+best.global.result <- rbind(global.result.dt[1,], global.result.nn[1,])
+best.global.result <- rbind(best.global.result, global.result.svm[1,])
+best.global.result <- rbind(best.global.result, global.result.rl[1,])
+best.global.result
+```
+
+**Observaciones:**
+
+- Algunas métricas dan mejores resultados en el conjunto de test que en training. Esto puede ser debido a la distribución no estratificada del dataset tras aplicar SMOTE. No obstante las mejores combianciones son las pertenecientes a configuraciones con SMOTE denotando el efecto positivo de este en la generalización del modelo. 
+
+- Aunque la selección de variables a permitido reducir el coste computacional del problema y conocer las variables más representativas, la reducción de 10 a 6 variables a mostrado un decremento en el rendimiento del modelo. 
+
+- La codificación One Hot Encoder y estandarización de las variables no ha mejorado al resto de modelos. Faltaría por aplicar otros métodos de normalización más apropiados a las características del conjunto de datos.
+
+- No hay un consenso en el mejor método de selección de variables. En tres de los modelos con mejores resultados ha sido aplicado selección de variables por hipótesis estadística.
+
+- Métricas como precisión y recall, con especial relevancia en el contexto del problema, han obtenido unos resultados muy irregulares en la comparación de los modelos. 
+
+
+## Conclusiones
+
+En este trabajo hemos propuesto, un conjunto de modelos de aprendizaje computacional, aplicados a la predicción de respuesta de un tratamiento quimioterapéutico en cancer de mama. 
+
+Con el fin de poder tener un mayor conocimiento sobre la influencia de un conjunto de genes marcadores en la respuesta del tratamiento, como también en poder reducir el coste computacional del problema hemos aplicado técnicas de selección de variables de tipo filtrado. 
+
+Teniendo en cuenta el problema de desbalanceo de clases del conjunto de datos se ha aplicado la técnica de sobremuestreo sintético SMOTE. 
+
+Se ha alcanzado un rendimiento aceptable con algunos de los algoritmos aplicados, destancando SVM y Neural Networks. 
+
+Entre las líneas de mejora futura destacamos, la optimización de la solución aplicada al problema de desbalanceo de clases y la aplicación de métodos de selección de variables que permitan hacer una elección basada en características propias de los genes y su expresión.
+
